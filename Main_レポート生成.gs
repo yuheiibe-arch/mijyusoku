@@ -284,7 +284,17 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
         
         if (totalRequiredMinutes > 0) {
             let entry = `[info][title]${dateTitle}[/title]`;
-            if (shiftData.backupInfoMap[dateKey]) entry += shiftData.backupInfoMap[dateKey];
+            
+            // ▼▼▼ バックアップ医師がいる時と、いない時（逆説的）の分岐処理 ▼▼▼
+            if (shiftData.backupInfoMap[dateKey]) {
+                entry += shiftData.backupInfoMap[dateKey]
+                    .replace(/【バックアップ】/g, "【関東バックアップ】")
+                    .replace(/（全拠点）/g, "（関東全域）");
+            } else {
+                entry += "バックアップ医師ご応募なし";
+            }
+            // ▲▲▲ ここまで ▲▲▲
+            
             entry += `[hr]\n`;
             entry += `小児科１診目充足率：${rate}%（充足済み：${filledHours}h/募集：${requiredHours}h）\n`;
             
