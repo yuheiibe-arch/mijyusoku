@@ -38,7 +38,7 @@ function postToChatwork1() {
     if (responseCode === 200) {
       Logger.log('メッセージをChatworkに投稿しました: ' + responseBody);
 
-      // ▼▼▼【追加】新スクリプト（拠点連絡システム）へ連動合図を送る ▼▼▼
+      // ▼▼▼【追加1】新スクリプト（拠点連絡システム）へ連動合図を送る ▼▼▼
       try {
         const syncSs = SpreadsheetApp.openById('1jmRdwUEUNhC2iTZyqQC3IqdBIJGZiCdR9RR2An_yvw8');
         let queueSheet = syncSs.getSheetByName('⚙️_連携キュー');
@@ -52,7 +52,17 @@ function postToChatwork1() {
       } catch (syncErr) {
         Logger.log('拠点連動エラー（DS部への投稿自体は成功しています）: ' + syncErr.message);
       }
-      // ▲▲▲【追加ここまで】▲▲▲
+      // ▲▲▲【追加1ここまで】▲▲▲
+
+      // ▼▼▼【追加2】caps365.jp（AIエージェント会議用）へ暗号化JSONを送信 ▼▼▼
+      try {
+        if (typeof triggerAiBridgeExport === 'function') {
+          triggerAiBridgeExport();
+        }
+      } catch (aiErr) {
+        Logger.log('AI連携送信エラー（DS部への投稿自体は成功しています）: ' + aiErr.message);
+      }
+      // ▲▲▲【追加2ここまで】▲▲▲
 
     } else {
       Logger.log(`Chatworkへの投稿に失敗しました。ステータスコード: ${responseCode}, レスポンス: ${responseBody}`);
