@@ -1,0 +1,234 @@
+/**
+ * ============================================================================
+ * AI連携_2_データ抽出.gs（ペイロード組み立て・アプローチ/確認用/応募シフト抽出）
+ * ============================================================================
+ */
+
+function buildAiShiftContextPayload_(ss) {
+  const approachSheet = ss.getSheetByName('アプローチシート');
+  const confirmSheet = ss.getSheetByName('確認用');
+  const pasteSheet = ss.getSheetByName('貼付用');
+  const reportSheet = ss.getSheetByName('文章自動作成');
+
+  if (!approachSheet || !confirmSheet) {
+    throw new Error('「アプローチシート」または「確認用」シートが見つかりません。');
+  }
+
+  const { clinicNoMap, docLicenseMap, docDailyStatusMap, docWorkCalendarMap } =
+    buildDoctorWorkCalendarFromSheets_(pasteSheet);
+
+  const attachBaseFullTimeTag = (rawNamesStr, dateStr) => {
+    if (!rawNamesStr) return '';
+    return String(rawNamesStr).split(/([,、，\n]+)/).map(token => {
+      if (/^[,、，\n]+$/.test(token) || !token.trim()) return token;
+      const parts = token.split(/([：:])/);
+      const namePart = parts[0].trim();
+      const restPart = parts.slice(1).join('');
+      const docKey = normalizeDocKey_(namePart);
+      if (!docKey || docKey === '未充足') return token;
+
+      const st = docDailyStatusMap.get(`${dateStr}_${docKey}`);
+      const cal = docWorkCalendarMap.get(docKey);
+      const isFull = (st && st.isFullTime) || (cal && cal.isFullTimeEver);
+      const isShotei = Boolean(st && st.isShoteiKyushutsu);
+
+      const tag = isFull ? (isShotei ? '(常勤・所定休出)' : '(常勤)') : '';
+      return `${namePart}${tag}${restPart}`;
+    }).join('');
+  };
+
+  const resolveClinicNo = (clinicRaw, deptRaw) => {
+    const base = cleanBaseClinicName_(clinicRaw);
+    const dept = String(deptRaw || '').trim();
+    if (dept && clinicNoMap.has(`${base}_${dept}`)) return clinicNoMap.get(`${base}_${dept}`);
+    if (clinicNoMap.has(base)) return clinicNoMap.get(base);
+    return '';
+  };
+
+  const targetDateSet = new Set();
+  const unfilledList = [];
+
+  const apLastRow = approachSheet.getLastRow();
+  const apLastCol = approachSheet.getLastColumn();
+  if (apLastRow >= 3) {
+    const headers = approachSheet.getRange(1, 1, 1, apLastCol).getDisplayValues()[0].map(h => String(h || '').trim());
+    const apRows = approachSheet.getRange(3, 1, apLastRow - 2, apLastCol).getDisplayValues();
+    const idx = name => headers.indexOf(name);
+
+    for (let i = 0; i < apRows.length; i++) {
+      const r = apRows[i];
+      const rawDate = String(r[idx('日付')] || '').trim();
+      const clinic = String(r[idx('拠点名')] || '').trim();
+      const absenceTime = String(r[idx('不在時間')] || '').trim();
+      if (!rawDate || !clinic || !absenceTime) continue;
+
+      const normDate = normalizeBridgeDate_(rawDate);
+      if (!normDate) continue;
+
+      const status = idx('対応状況') >= 0 ? String(r[idx('対応状況')] || '').trim() : '';
+      if (status === '完了') continue;
+
+      targetDateSet.add(normDate);
+
+      const rawPrevDocs = idx('前の時間枠の医師') >= 0 ? String(r[idx('前の時間枠の医師')] || '').trim() : '';
+      const rawNextDocs = idx('後ろの時間枠の医師') >= 0 ? String(r[idx('後ろの時間枠の医師')] || '').trim() : '';
+
+      unfilledList.push({
+        date: normDate,
+        clinic: clinic,
+        absenceTime: absenceTime,
+        listedWage: idx('掲載時給') >= 0 ? String(r[idx('掲載時給')] || '').trim() : '',
+        prevDocs: attachBaseFullTimeTag(rawPrevDocs, normDate),
+        nextDocs: attachBaseFullTimeTag(rawNextDocs, normDate),
+        phase: idx('Phaze') >= 0 ? String(r[idx('Phaze')] || '').trim() : (idx('Phase') >= 0 ? String(r[idx('Phase')] || '').trim() : ''),
+        prevExtStatus: idx('前医延長') >= 0 ? String(r[idx('前医延長')] || '').trim() : '',
+        nextEarlyStatus: idx('後医早出') >= 0 ? String(r[idx('後医早出')] || '').trim() : '',
+        assignee: idx('担当') >= 0 ? String(r[idx('担当')] || '').trim() : '',
+        status: status,
+        specialWage: idx('特別時給') >= 0 ? String(r[idx('特別時給')] || '').trim() : '',
+        memo: idx('作業メモ') >= 0 ? String(r[idx('作業メモ')] || '').trim() : ''
+      });
+    }
+  }
+
+  const activeShiftsByDate = {};
+  const cfLastRow = confirmSheet.getLastRow();
+  if (cfLastRow >= 2 && targetDateSet.size > 0) {
+    const cfRows = confirmSheet.getRange(2, 1, cfLastRow - 1, 10).getDisplayValues();
+    for (let i = 0; i < cfRows.length; i++) {
+      const r = cfRows[i];
+      const clinicName = String(r[0] || '').trim();
+      const normDate = normalizeBridgeDate_(r[1]);
+      const dept = String(r[2] || '').trim();
+      if (!clinicName || !normDate || !targetDateSet.has(normDate)) continue;
+
+      if (!activeShiftsByDate[normDate]) activeShiftsByDate[normDate] = [];
+      activeShiftsByDate[normDate].push({
+        clinicNo: resolveClinicNo(clinicName, dept),
+        clinic: clinicName,
+        dept: dept,
+        countA: Number(r[3] || 0),
+        countB: Number(r[4] || 0),
+        countC: Number(r[5] || 0),
+        docsA: attachBaseFullTimeTag(String(r[7] || '').trim(), normDate),
+        docsB: attachBaseFullTimeTag(String(r[8] || '').trim(), normDate),
+        docsC: attachBaseFullTimeTag(String(r[9] || '').trim(), normDate)
+      });
+    }
+  }
+
+  const ouboShiftsByDate = extractOuboShiftsForTargetDates_(targetDateSet, docLicenseMap, resolveClinicNo, attachBaseFullTimeTag);
+  const streakWarnings = buildConsecutiveWorkWarnings_(docWorkCalendarMap);
+  const summaryText = reportSheet ? String(reportSheet.getRange('A6').getDisplayValue() || '').trim() : '';
+
+  let spotCandidateRows = [], bundledCandidateRows = [];
+  if (typeof buildKinmukunCandidatesFromUnfilledList_ === 'function' && unfilledList.length > 0) {
+    try {
+      const kinmukunRes = buildKinmukunCandidatesFromUnfilledList_(unfilledList);
+      spotCandidateRows = kinmukunRes.spotCandidateRows || [];
+      bundledCandidateRows = kinmukunRes.bundledCandidateRows || [];
+    } catch (e) {
+      Logger.log('勤務くん候補抽出スキップ: ' + e.message);
+    }
+  }
+
+  let dailyMetricsByDate = {};
+  try {
+    dailyMetricsByDate = buildStructuredDailyMetrics_(ss);
+  } catch (e) {
+    Logger.log('日別充足指標の算出スキップ: ' + e.message);
+  }
+
+  return {
+    schemaVersion: 2,
+    generatedAt: Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss'),
+    unfilledList,
+    activeShiftsByDate,
+    ouboShiftsByDate,
+    streakWarnings,
+    spotCandidateRows,
+    bundledCandidateRows,
+    summaryText,
+    dailyMetricsByDate
+  };
+}
+
+function extractOuboShiftsForTargetDates_(targetDateSet, docLicenseMap, resolveClinicNo, attachBaseFullTimeTag) {
+  const ouboShiftsByDate = {};
+  if (targetDateSet.size === 0) return ouboShiftsByDate;
+
+  try {
+    const cfg = getAiBridgeConfig_();
+    const extSs = SpreadsheetApp.openById(cfg.EXT_SHIFT_SS_ID);
+    const ouboSheet = extSs.getSheetByName('応募シフト');
+    if (!ouboSheet || ouboSheet.getLastRow() < 2) return ouboShiftsByDate;
+
+    const ouboRows = ouboSheet.getDataRange().getDisplayValues();
+    const oHeaders = ouboRows[0].map(h => String(h || '').trim());
+    const findCol = (names, fallbackIdx) => {
+      for (const n of names) {
+        const idx = oHeaders.indexOf(n);
+        if (idx !== -1) return idx;
+      }
+      return fallbackIdx;
+    };
+
+    const idxDoc = findCol(['名前', '医師名', '氏名'], 0);
+    const idxLic = findCol(['医籍番号', '医籍登録番号'], -1);
+    const idxClinicNo = findCol(['クリニックNo', '拠点No', 'クリニックID'], -1);
+    const idxClinic = findCol(['クリニック名', '拠点名'], 3);
+    const idxDept = findCol(['診療科', '診療科目'], 4);
+    const idxDate = findCol(['勤務日', '日付'], 5);
+    const idxStart = findCol(['勤務開始時間', '開始時間'], 6);
+    const idxEnd = findCol(['勤務終了時間', '終了時間'], 7);
+
+    for (let i = 1; i < ouboRows.length; i++) {
+      const r = ouboRows[i];
+      const docName = String(r[idxDoc] || '').trim();
+      const clinic = String(r[idxClinic] || '').trim();
+      const dept = String(r[idxDept] || '').trim();
+      const normDate = normalizeBridgeDate_(r[idxDate]);
+      const startT = String(r[idxStart] || '').trim();
+      const endT = String(r[idxEnd] || '').trim();
+      if (!docName || !normDate || !targetDateSet.has(normDate)) continue;
+
+      const cleanDocKey = normalizeDocKey_(docName);
+      const licenseNo = (idxLic !== -1 && r[idxLic]) ? String(r[idxLic]).trim() : (docLicenseMap.get(cleanDocKey) || '');
+      const clinicNo = (idxClinicNo !== -1 && r[idxClinicNo]) ? String(r[idxClinicNo]).trim() : resolveClinicNo(clinic, dept);
+
+      if (!ouboShiftsByDate[normDate]) ouboShiftsByDate[normDate] = [];
+      ouboShiftsByDate[normDate].push({
+        licenseNo,
+        doctor: attachBaseFullTimeTag(docName, normDate),
+        clinicNo,
+        clinic,
+        dept,
+        time: `${startT}-${endT}`
+      });
+    }
+  } catch (e) {
+    Logger.log('応募シフト参照スキップ: ' + e.message);
+  }
+  return ouboShiftsByDate;
+}
+
+function cleanBaseClinicName_(rawName) {
+  return String(rawName || '').replace(/[\(（].*?[\)）]/g, '').replace(/[\s\u3000]+/g, '').trim();
+}
+
+function normalizeDocKey_(name) {
+  return String(name || '').replace(/[\(（].*?[\)）]/g, '').replace(/先生$/g, '').replace(/[\s\u3000]+/g, '').trim();
+}
+
+function normalizeBridgeDate_(rawVal) {
+  if (!rawVal) return '';
+  if (rawVal instanceof Date && !isNaN(rawVal.getTime())) {
+    return Utilities.formatDate(rawVal, 'Asia/Tokyo', 'yyyy/MM/dd');
+  }
+  const clean = String(rawVal).split(/[（(]/)[0].trim().replace(/[年月\.\-]/g, '/').replace(/日/g, '');
+  const parts = clean.split('/');
+  if (parts.length >= 3) {
+    return `${parts[0]}/${('0' + parts[1]).slice(-2)}/${('0' + parts[2]).slice(-2)}`;
+  }
+  return '';
+}
