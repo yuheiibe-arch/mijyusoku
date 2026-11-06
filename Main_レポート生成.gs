@@ -18,7 +18,46 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
   const loopStart = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
   const loopEnd = new Date(Math.max(endDate.getTime(), new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getTime()));
 
-  // 爆速版：中抜けインターバル抽出
+  // Main_データ読込.gs で動的検索した列インデックスを取得
+  const pasteCols = (masterData.colMap && masterData.colMap.paste)
+    ? masterData.colMap.paste
+    : { doc: 0, clinicNo: 11, clinic: 12, dept: 13, date: 14, times: [15, 16, 17, 18, 19] };
+  const ouboCols = (masterData.colMap && masterData.colMap.oubo)
+    ? masterData.colMap.oubo
+    : { doc: 0, clinicNo: -1, clinic: 3, dept: 4, date: 5, start: 6, end: 7 };
+
+  // クリニックNo最優先（＋拠点名フォールバック）で開院日を確認し、未開院なら true を返す
+  const isUnopenedClinic = (clinicName, targetDate, explicitClinicNo = "") => {
+    const cleanName = String(clinicName || "").trim();
+    const normName = normalizeClinicName(cleanName);
+    const baseName = cleanName.replace(/[\(（].*?[\)）]/g, "").trim();
+
+    let cNo = String(explicitClinicNo || "").trim();
+    if (!cNo && masterData.clinicNameToNoMap) {
+      cNo = masterData.clinicNameToNoMap.get(cleanName)
+         || masterData.clinicNameToNoMap.get(normName)
+         || masterData.clinicNameToNoMap.get(baseName)
+         || "";
+    }
+
+    let openDate = null;
+    if (cNo && masterData.openDateByNoMap && masterData.openDateByNoMap.has(cNo)) {
+      openDate = masterData.openDateByNoMap.get(cNo);
+    } else if (masterData.openDateMap) {
+      openDate = masterData.openDateMap.get(cleanName)
+              || masterData.openDateMap.get(normName)
+              || masterData.openDateMap.get(baseName)
+              || null;
+    }
+
+    if (!openDate) return false;
+
+    const openZero = new Date(openDate.getFullYear(), openDate.getMonth(), openDate.getDate());
+    const checkZero = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+    return checkZero < openZero;
+  };
+
+  // 爆速版：中抜けインターバル抽出（動的特定された時間列を使用）
   const getIntervalsFast = (row) => {
     const p = (t) => {
       if (!t) return NaN;
@@ -31,7 +70,7 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
       return NaN;
     };
     const times = [];
-    for (let i = 15; i <= 19; i++) {
+    for (const i of pasteCols.times) {
       const val = p(row[i]);
       if (!isNaN(val)) times.push(val);
     }
@@ -63,14 +102,7 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
     let totalRequiredMinutes = 0;
     
     shiftData.sortedClinicList.forEach(clinic => {
-        if (masterData.openDateMap.has(clinic)) {
-            const openDate = masterData.openDateMap.get(clinic);
-            openDate.setHours(0, 0, 0, 0);
-            const checkDate = new Date(d);
-            checkDate.setHours(0, 0, 0, 0);
-            if (checkDate < openDate) return; 
-        }
-
+        if (isUnopenedClinic(clinic, d)) return; 
         if (clinic.includes("内科")) return; 
         
         let closedTime = masterData.closedDataMap.get(`${dateKey}_${clinic}`) || masterData.closedDataMap.get(`${dateKey}_全拠点`);
@@ -104,19 +136,13 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
     const dailyRecords = shiftData.fuzaiRecords.filter(r => r.dateKey === dateKey);
     const groupedFuzai = {};
     dailyRecords.forEach(r => {
+        if (isUnopenedClinic(r.normName, d)) return;
         if (!groupedFuzai[r.normName]) groupedFuzai[r.normName] = [];
         groupedFuzai[r.normName].push(r.timeRaw);
     });
 
     shiftData.sortedClinicList.forEach(clinic => {
-        if (masterData.openDateMap.has(clinic)) {
-            const openDate = masterData.openDateMap.get(clinic);
-            openDate.setHours(0, 0, 0, 0);
-            const checkDate = new Date(d);
-            checkDate.setHours(0, 0, 0, 0);
-            if (checkDate < openDate) return;
-        }
-
+        if (isUnopenedClinic(clinic, d)) return;
         if (clinic.includes("内科")) return; 
 
         let closedTime = masterData.closedDataMap.get(`${dateKey}_${clinic}`) || masterData.closedDataMap.get(`${dateKey}_全拠点`);
@@ -132,13 +158,7 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
     });
 
     for (const normName in groupedFuzai) {
-        if (masterData.openDateMap.has(normName)) {
-            const openDate = masterData.openDateMap.get(normName);
-            openDate.setHours(0, 0, 0, 0);
-            const checkDate = new Date(d);
-            checkDate.setHours(0, 0, 0, 0);
-            if (checkDate < openDate) continue; 
-        }
+        if (isUnopenedClinic(normName, d)) continue; 
 
         let closedTime = null;
         if (normName.includes("内科")) {
@@ -225,9 +245,11 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
       const getCov = (c) => { if (!covMap[c]) covMap[c] = new Array(1440).fill(0); return covMap[c]; };
 
       dailyExtData.paste.forEach(row => {
-        const doc = String(row[0] || "").trim();
-        const clinic = String(row[12] || "").replace(/[（(]小児科[）)]/, "").trim();
+        const doc = String(row[pasteCols.doc] || "").trim();
+        const clinic = String(row[pasteCols.clinic] || "").replace(/[（(]小児科[）)]/, "").trim();
+        const cNo = pasteCols.clinicNo !== -1 ? String(row[pasteCols.clinicNo] || "").trim() : "";
         if (!doc || !clinic || doc.includes("バックアップ") || doc.includes("有給") || doc.includes("欠勤")) return;
+        if (isUnopenedClinic(clinic, d, cNo)) return;
         
         const intervals = getIntervalsFast(row);
         intervals.forEach(inv => {
@@ -237,12 +259,15 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
       });
 
       dailyExtData.oubo.forEach(row => {
-        const doc = String(row[0] || "").trim();
-        const clinic = String(row[3] || "").replace(/[（(]小児科[）)]/, "").trim();
+        const doc = String(row[ouboCols.doc] || "").trim();
+        const clinic = String(row[ouboCols.clinic] || "").replace(/[（(]小児科[）)]/, "").trim();
+        const cNo = ouboCols.clinicNo !== -1 ? String(row[ouboCols.clinicNo] || "").trim() : "";
         if (!doc || !clinic || clinic.includes("バックアップ")) return;
         if (doc.replace(/\s+/g, '') === "橋本浩") return;
-        const startMin = safeParseTime(row[6]);
-        const endMin = safeParseTime(row[7]);
+        if (isUnopenedClinic(clinic, d, cNo)) return;
+
+        const startMin = safeParseTime(row[ouboCols.start]);
+        const endMin = safeParseTime(row[ouboCols.end]);
         if (!isNaN(startMin) && !isNaN(endMin) && startMin < endMin) {
           const cov = getCov(clinic);
           for (let m = startMin; m < endMin; m++) cov[m]++;
@@ -251,6 +276,8 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
 
       masterData.cooDataByDate[dateKey].forEach(row => {
         const clinic = String(row[0] || "").replace(/[（(]小児科[）)]/, "").trim();
+        if (isUnopenedClinic(clinic, d)) return;
+
         const startMin = safeParseTime(row[2]);
         const endMin = safeParseTime(row[3]);
         const reqStr = String(row[4] || "").toLowerCase(); 
