@@ -100,6 +100,11 @@ function generateDoctorAbsenceReportWithContext() {
     if (!processedWorkData[dateKey]) processedWorkData[dateKey] = {};
     if (!processedWorkData[dateKey][aggregationKey]) processedWorkData[dateKey][aggregationKey] = [];
 
+    // ★除外医師判定：拠点と日付の配列枠は残したまま、実働時間の登録だけをスキップして不在扱いにする
+    if (typeof isExcludedDoctorInPasteRow_ === 'function' && isExcludedDoctorInPasteRow_(row)) {
+      continue;
+    }
+
     const intervals = getIntervalsFast(row);
     
     intervals.forEach(inv => {

@@ -1,191 +1,161 @@
 /**
  * ============================================================================
- * AI連携_暗号化送信.gs（パート1：送信制御・暗号化）
+ * Chatwork自動投稿.gs
+ * スクリプトプロパティの CHATWORK_API_TOKEN を使用してDS部に投稿する
+ * ＋ 投稿成功時に拠点連絡システム（⚙️_連携キュー）へ連動トリガーを書き込む
  * ============================================================================
  */
 
-var AI_BRIDGE_CONFIG = {
-  RECIPIENT_EMAIL: 'capsdoctor365@caps365.jp',
-  SUBJECT_PREFIX: '【AI連携暗号化JSON】医師不在・シフト状況パック',
-  EXT_SHIFT_SS_ID: '1LFVmqwJU-WQbNOuSai8k72bSK790Eq_lBZeNKmYu8co',
-  DEFAULT_SECRET_KEY: 'CAPS_MNYS_AI_AGENT_SECRET_2026_KEY_#9876',
+// 連携先の拠点連絡システム管理スプレッドシートID・シート名
+const BRIDGE_QUEUE_SS_ID = '1jmRdwUEUNhC2iTZyqQC3IqdBIJGZiCdR9RR2An_yvw8';
+const BRIDGE_QUEUE_SHEET_NAME = '⚙️_連携キュー';
 
-  PENDING_FLAG_KEY: 'AI_BRIDGE_PENDING_SEND',
-  LAST_SENT_HASH_KEY: 'AI_BRIDGE_LAST_SENT_HASH',
-  LAST_SENT_TIME_KEY: 'AI_BRIDGE_LAST_SENT_TIME_MS',
+function postToChatwork1() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const sheet = ss.getSheetByName('文章自動作成');
 
-  MIN_INTERVAL_MS: 30 * 60 * 1000,
-
-  EXCLUDED_CLINIC_NOS: new Set(['1000', '1002', '1004', '1005', '1017', '1018']),
-  EXCLUDED_CLINIC_NAMES: [
-    '出張インフルエンザワクチン',
-    '【埼玉】ワクチンバックアップシフト',
-    '職域新型コロナワクチン接種',
-    '【千葉】ワクチンバックアップシフト',
-    '【東京】ワクチンバックアップシフト',
-    '院外勤務（内科）',
-    '院外勤務（小児科）',
-    '【関東】バックアップシフト',
-    '欠勤',
-    '有給',
-    '嘱託医業務',
-    '医師会業務',
-    '休館'
-  ]
-};
-
-function triggerAiBridgeExport() {
-  const props = PropertiesService.getScriptProperties();
-  try {
-    props.deleteProperty(AI_BRIDGE_CONFIG.PENDING_FLAG_KEY);
-    sendEncryptedShiftContextToCaps(false);
-  } catch (e) {
-    props.setProperty(AI_BRIDGE_CONFIG.PENDING_FLAG_KEY, String(Date.now()));
-    Logger.log('直接送信できなかったため、1回限りの代理送信予約をセットしました: ' + e.message);
+  if (!sheet) {
+    ui.alert('エラー', '「文章自動作成」シートが見つかりません。', ui.ButtonSet.OK);
+    return;
   }
-}
 
-function installAiBridgeFallbackTrigger() {
-  const funcName = 'processPendingAiBridgeExport';
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === funcName) ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger(funcName).timeBased().everyMinutes(10).create();
-  Logger.log('✅ AI連携のバックグラウンド代理送信トリガー（10分間隔）を設定しました。');
-}
+  const message = String(sheet.getRange('A6').getValue() || '').trim();
+  if (!message) {
+    ui.alert('エラー', '「文章自動作成」シートのA6セルが空です。\n先に「本番シフト集計実行」を行ってください。', ui.ButtonSet.OK);
+    return;
+  }
 
-function processPendingAiBridgeExport() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return;
+  const props = PropertiesService.getScriptProperties();
+  const apiToken = (props.getProperty('CHATWORK_API_TOKEN') || '').trim();
 
-  try {
-    const props = PropertiesService.getScriptProperties();
-    const pendingTimestamp = props.getProperty(AI_BRIDGE_CONFIG.PENDING_FLAG_KEY);
-    if (!pendingTimestamp) return;
+  if (!apiToken) {
+    ui.alert('エラー', 'スクリプトプロパティに「CHATWORK_API_TOKEN」が見つかりません。', ui.ButtonSet.OK);
+    return;
+  }
 
-    props.deleteProperty(AI_BRIDGE_CONFIG.PENDING_FLAG_KEY);
+  // ルームIDをスクリプトプロパティから探す（複数のキー名に対応）
+  let roomId = (
+    props.getProperty('CHATWORK_ROOM_ID') ||
+    props.getProperty('CHATWORK_ROOM_ID_1') ||
+    props.getProperty('CW_ROOM_ID') ||
+    props.getProperty('ROOM_ID') ||
+    ''
+  ).trim();
 
-    if (Date.now() - Number(pendingTimestamp) > 2 * 60 * 60 * 1000) {
-      Logger.log('古い代理送信フラグのため破棄しました。');
+  // スクリプトプロパティにルームIDが無い場合、ダイアログで1回だけ聞いて自動保存する
+  if (!roomId) {
+    const promptRes = ui.prompt(
+      'DS部 ルームIDの初回設定',
+      'Chatworkの投稿先ルームID（URL末尾の rid に続く数字）を入力してください。\n※一度入力するとスクリプトプロパティ（CHATWORK_ROOM_ID）に保存され、次回から入力不要になります。',
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (promptRes.getSelectedButton() !== ui.Button.OK) {
+      ss.toast('投稿をキャンセルしました。', 'キャンセル', 3);
       return;
     }
-
-    sendEncryptedShiftContextToCaps(false);
-  } catch (e) {
-    Logger.log('代理送信時にエラーが発生しました: ' + e.message);
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function testSendEncryptedShiftContextManual() {
-  sendEncryptedShiftContextToCaps(true);
-}
-
-function sendEncryptedShiftContextToCaps(isForceManual) {
-  const props = PropertiesService.getScriptProperties();
-  const nowMs = Date.now();
-
-  const lastSentTimeMs = Number(props.getProperty(AI_BRIDGE_CONFIG.LAST_SENT_TIME_KEY) || 0);
-  if (!isForceManual && lastSentTimeMs > 0 && (nowMs - lastSentTimeMs) < AI_BRIDGE_CONFIG.MIN_INTERVAL_MS) {
-    Logger.log('🛑 暴走防止ストッパー作動：直近30分以内に送信済みのためスキップしました。');
-    return;
-  }
-
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const payloadObj = buildAiShiftContextPayload_(ss);
-
-  if (!payloadObj) {
-    Logger.log('AI連携送信スキップ：ペイロードが生成できませんでした。');
-    return;
-  }
-
-  const contentForHash = JSON.stringify({
-    u: payloadObj.unfilledList,
-    a: payloadObj.activeShiftsByDate,
-    o: payloadObj.ouboShiftsByDate,
-    s: payloadObj.streakWarnings,
-    k: payloadObj.spotCandidateRows,
-    m: payloadObj.dailyMetricsByDate
-  });
-  const currentHash = computeSha256Hex_(contentForHash);
-  const lastSentHash = props.getProperty(AI_BRIDGE_CONFIG.LAST_SENT_HASH_KEY) || '';
-
-  if (!isForceManual && currentHash === lastSentHash) {
-    Logger.log('🛑 2重送信防止ストッパー作動：前回と内容が同一のためスキップしました。');
-    return;
-  }
-
-  props.setProperty(AI_BRIDGE_CONFIG.LAST_SENT_TIME_KEY, String(nowMs));
-  props.setProperty(AI_BRIDGE_CONFIG.LAST_SENT_HASH_KEY, currentHash);
-
-  const secretKey = props.getProperty('AI_BRIDGE_SECRET_KEY') || AI_BRIDGE_CONFIG.DEFAULT_SECRET_KEY;
-  const jsonString = JSON.stringify(payloadObj);
-  const encryptedPackage = encryptAndSignPayload_(jsonString, secretKey);
-
-  const nowStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm');
-  const subject = `${AI_BRIDGE_CONFIG.SUBJECT_PREFIX} (${nowStr})`;
-
-  const body = [
-    '※このメールは医療法人側システム（mijyusoku）からAIエージェント会議用に自動送信された暗号化データです。',
-    `生成日時: ${nowStr}`,
-    `不在枠件数: ${payloadObj.unfilledList.length}件`,
-    `対象日数: ${Object.keys(payloadObj.activeShiftsByDate).length}日分`,
-    `日別充足指標日数: ${Object.keys(payloadObj.dailyMetricsByDate || {}).length}日分`,
-    `連勤注意候補件数: ${(payloadObj.streakWarnings || []).length}件`,
-    `個別打診候補件数: ${Math.max(0, (payloadObj.spotCandidateRows || []).length - 1)}件`,
-    `複数日程おまとめ医師数: ${Math.max(0, (payloadObj.bundledCandidateRows || []).length - 1)}名`,
-    '',
-    '---BEGIN_ENCRYPTED_AI_PAYLOAD---',
-    JSON.stringify(encryptedPackage),
-    '---END_ENCRYPTED_AI_PAYLOAD---'
-  ].join('\n');
-
-  MailApp.sendEmail({
-    to: AI_BRIDGE_CONFIG.RECIPIENT_EMAIL,
-    subject: subject,
-    body: body,
-    noReply: true
-  });
-
-  Logger.log(`✅ 送信完了（不在枠: ${payloadObj.unfilledList.length}件 / 日別指標: ${Object.keys(payloadObj.dailyMetricsByDate || {}).length}日分）`);
-}
-
-function computeSha256Hex_(str) {
-  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, str, Utilities.Charset.UTF_8);
-  return digest.map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
-}
-
-function encryptAndSignPayload_(plainText, secretKey) {
-  const textBlob = Utilities.newBlob(plainText, 'application/json', 'payload.json');
-  const gzipBytes = Utilities.gzip(textBlob).getBytes();
-  const ivStr = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
-
-  const cipherBytes = xorStreamCipher_(gzipBytes, secretKey, ivStr);
-  const cipherBase64 = Utilities.base64Encode(cipherBytes);
-
-  const sigBytes = Utilities.computeHmacSha256Signature(ivStr + ':' + cipherBase64, secretKey);
-  const sigBase64 = Utilities.base64Encode(sigBytes);
-
-  return { v: 1, iv: ivStr, data: cipherBase64, sig: sigBase64 };
-}
-
-function xorStreamCipher_(inputBytes, secretKey, ivStr) {
-  const output = new Array(inputBytes.length);
-  let keyStream = [];
-  let blockIndex = 0;
-
-  for (let i = 0; i < inputBytes.length; i++) {
-    if (i % 32 === 0) {
-      keyStream = Utilities.computeDigest(
-        Utilities.DigestAlgorithm.SHA_256,
-        `${secretKey}|${ivStr}|${blockIndex}`,
-        Utilities.Charset.UTF_8
-      );
-      blockIndex++;
+    // 「#!rid12345678」のまま貼られても数字だけ抜き出す
+    roomId = promptRes.getResponseText().replace(/[^0-9]/g, '');
+    if (!roomId) {
+      ui.alert('エラー', '有効なルームID（数字）が入力されませんでした。', ui.ButtonSet.OK);
+      return;
     }
-    output[i] = (inputBytes[i] ^ keyStream[i % 32]) & 0xff;
-    if (output[i] > 127) output[i] -= 256;
+    props.setProperty('CHATWORK_ROOM_ID', roomId);
   }
-  return output;
+
+  // 送信確認ダイアログ
+  const confirm = ui.alert(
+    'Chatwork投稿確認',
+    'DS部のChatworkへ未充足報告を投稿します。よろしいですか？',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) {
+    ss.toast('投稿をキャンセルしました。', 'キャンセル', 3);
+    return;
+  }
+
+  try {
+    const url = `https://api.chatwork.com/v2/rooms/${roomId}/messages`;
+    const options = {
+      method: 'post',
+      headers: { 'X-ChatWorkToken': apiToken },
+      payload: { body: message, self_unread: '0' },
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    const resBody = response.getContentText();
+
+    if (code >= 200 && code < 300) {
+      ss.toast('Chatwork（DS部）への投稿が完了しました！', '送信完了', 5);
+
+      // ★復活：拠点連絡システムの「⚙️_連携キュー」へ MIJYUSOKU_POST を書き込む
+      try {
+        enqueueMijyusokuPostToBridge_();
+      } catch (qErr) {
+        Logger.log('連携キュー書き込みエラー: ' + qErr.message);
+      }
+
+      // AI連携の暗号化メール送信も連動させる
+      try {
+        if (typeof triggerAiBridgeExport === 'function') {
+          triggerAiBridgeExport();
+        }
+      } catch (aiErr) {
+        Logger.log('AI連携送信スキップ: ' + aiErr.message);
+      }
+    } else {
+      throw new Error(`HTTP ${code}: ${resBody}`);
+    }
+  } catch (e) {
+    Logger.log('Chatwork送信エラー: ' + e.message);
+    ui.alert('送信エラー', 'Chatworkへの投稿に失敗しました。\n' + e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * 拠点連絡システム（reamindkun）の「⚙️_連携キュー」シートへ未充足投稿イベントを追加するヘルパー
+ * （見出し名から動的に列位置を特定して書き込み）
+ */
+function enqueueMijyusokuPostToBridge_() {
+  const queueSs = SpreadsheetApp.openById(BRIDGE_QUEUE_SS_ID);
+  const queueSheet = queueSs.getSheetByName(BRIDGE_QUEUE_SHEET_NAME);
+  if (!queueSheet) {
+    throw new Error(`シート「${BRIDGE_QUEUE_SHEET_NAME}」が見つかりません。`);
+  }
+
+  const lastCol = Math.max(5, queueSheet.getLastColumn());
+  const headers = queueSheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+
+  const idxReqAt  = headers.findIndex(h => h.includes('リクエスト日時'));
+  const idxType   = headers.findIndex(h => h.includes('イベント種別'));
+  const idxJson   = headers.findIndex(h => h.includes('ペイロード'));
+  const idxStatus = headers.findIndex(h => h.includes('処理ステータス'));
+  const idxDoneAt = headers.findIndex(h => h.includes('処理完了日時'));
+
+  const nowStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
+  const newRow = new Array(lastCol).fill('');
+
+  if (idxReqAt > -1)  newRow[idxReqAt]  = nowStr;
+  if (idxType > -1)   newRow[idxType]   = 'MIJYUSOKU_POST';
+  if (idxJson > -1)   newRow[idxJson]   = '';
+  if (idxStatus > -1) newRow[idxStatus] = '未処理';
+  if (idxDoneAt > -1) newRow[idxDoneAt] = '';
+
+  // 万が一見出し名が取得できなかった場合のフォールバック
+  if (idxType === -1 || idxStatus === -1) {
+    queueSheet.appendRow([nowStr, 'MIJYUSOKU_POST', '', '未処理', '']);
+  } else {
+    queueSheet.appendRow(newRow);
+  }
+  Logger.log('✅ ⚙️_連携キューに MIJYUSOKU_POST (未処理) を追加しました。');
+}
+
+/**
+ * 【リカバリー用】DS部へのChatwork再投稿はせず、拠点連絡システムへの連携キューだけを手動送信する関数
+ * （今日16:30の未連携分を今すぐ反応させたい場合は、エディタからこの関数を1回実行してください）
+ */
+function resendQueueOnly() {
+  enqueueMijyusokuPostToBridge_();
 }

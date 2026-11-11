@@ -94,6 +94,12 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
         doctorsA: [], doctorsB: [], doctorsC: []
       };
     }
+
+    // ★除外医師判定：拠点と日付の器（results[key]）は残しつつ、カウントと医師名追加をスキップする
+    if (typeof isExcludedDoctorInPasteRow_ === 'function' && isExcludedDoctorInPasteRow_(row)) {
+      return;
+    }
+
     results[key].aShiftSum += Number(aShiftValue) || 0;
     results[key].bShiftSum += Number(bShiftValue) || 0;
     results[key].cShiftSum += Number(cShiftValue) || 0;
