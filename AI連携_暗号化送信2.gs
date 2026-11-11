@@ -104,7 +104,7 @@ function buildBqShiftPayload_() {
   return {
     schemaVersion: 2,
     generatedAt: nowStr,
-    baseDate: todayStr,    // 既存互換用（今日）
+    baseDate: todayStr,      // 既存互換用（今日）
     startDate: startDateStr, // 実際の抽出開始日
     maxDate: maxDateStr,
     kakutei: extractShiftRows_(ss.getSheetByName("確定シフト"), startDateStr, maxDateStr, "kakutei"),
@@ -145,8 +145,10 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
   const iSecondFlag = idx("二診目表示");
   const iSpecialSetting = idx("特別時給設定");
 
-  // 時給1〜4（時間単価の最大値取得用）
-  const unitWageCols = ["時給1", "時給2", "時給3", "時給4"].map(n => idx(n)).filter(c => c !== -1);
+  // 時給1〜4・受入可能人数1〜4（4スロットの位置を保持した配列と、最大値取得用配列）
+  const wageSlotCols = ["時給1", "時給2", "時給3", "時給4"].map(n => idx(n));
+  const unitWageCols = wageSlotCols.filter(c => c !== -1);
+  const capSlotCols = ["受入可能人数1", "受入可能人数2", "受入可能人数3", "受入可能人数4"].map(n => idx(n));
 
   // 追加支給項目（手当）
   const allowanceCols = [];
@@ -218,8 +220,8 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
       if (iSpecialSetting !== -1 && row[iSpecialSetting]) obj.sp = String(row[iSpecialSetting]).trim();
       list.push(obj);
     } else {
-      // 中抜け休憩を考慮した実働区間（例: "09:00-13:00/15:00-18:00"）
-      const ivStr = buildWorkIntervalStr_(row, [iStart, iEnd1, iEnd2, iEnd3, iEnd]);
+      // 中抜け休憩と単価切替境界を正確に判別した実働区間（例: "09:00-13:00/15:00-21:00" または "15:00-20:00"）
+      const ivStr = buildWorkIntervalStr_(row, [iStart, iEnd1, iEnd2, iEnd3, iEnd], wageSlotCols, iWage, capSlotCols);
 
       // 行ごとの区分（有給・欠勤・所定休出・定期）の判定（要望1）
       const combinedNotes = `${rawRm} ${rawSc}`;
@@ -269,9 +271,21 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
 }
 
 /**
- * 開始〜終了（中抜け含む5列）から実働時間帯文字列（"09:00-13:00/15:00-21:00"）を組み立てる
+ * 開始〜終了（中抜け含む5列）と時給・受入列から実働時間帯文字列（"09:00-13:00/15:00-21:00"）を組み立てる
  */
-function buildWorkIntervalStr_(row, colIndices) {
+function buildWorkIntervalStr_(row, colIndices, wageSlotCols, iWage, capSlotCols) {
+  if (typeof extractWorkIntervals === "function") {
+    const intervals = extractWorkIntervals(row, {
+      times: colIndices,
+      wages: wageSlotCols || [-1, -1, -1, -1],
+      wageSum: iWage !== undefined ? iWage : -1,
+      caps: capSlotCols || [-1, -1, -1, -1]
+    });
+    if (intervals.length > 0) {
+      return intervals.map(iv => `${safeFormatTime(iv.start)}-${safeFormatTime(iv.end)}`).join("/");
+    }
+  }
+
   const times = colIndices
     .filter(idx => idx !== -1)
     .map(idx => padHhMm_(row[idx]))

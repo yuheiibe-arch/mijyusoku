@@ -37,15 +37,21 @@ function loadMasterAndExternalData(ss, sheets) {
 
   // 追加データソース
   const EXT_SS_ID = '1LFVmqwJU-WQbNOuSai8k72bSK790Eq_lBZeNKmYu8co';
-  const extDataByDate = {}; 
+  const extDataByDate = {};
   let isExtSsLoaded = false;
   const initExtDate = (dStr) => {
     if (!extDataByDate[dStr]) extDataByDate[dStr] = { paste: [], oubo: [], bosyu: [] };
   };
 
-  // 動的特定した列インデックス（Main_レポート生成.gs へも引き渡す）
+  // 動的特定した列インデックス（Main_レポート生成.gs / AI連携_4_日別充足指標.gs へ引き渡す）
   const colMap = {
-    paste: { doc: 0, clinicNo: 11, clinic: 12, dept: 13, date: 14, times: [15, 16, 17, 18, 19] },
+    paste: {
+      doc: 0, clinicNo: 11, clinic: 12, dept: 13, date: 14,
+      times: [15, 16, 17, 18, 19],
+      wages: [25, 26, 27, 28],
+      wageSum: 29,
+      caps: [54, 55, 56, 57]
+    },
     oubo: { doc: 0, clinicNo: -1, clinic: 3, dept: 4, date: 5, start: 6, end: 7 }
   };
 
@@ -55,7 +61,7 @@ function loadMasterAndExternalData(ss, sheets) {
   try {
     const extSs = SpreadsheetApp.openById(EXT_SS_ID);
     isExtSsLoaded = true;
-    
+
     const pasteSheet = ss.getSheetByName('貼付用');
     if (pasteSheet && pasteSheet.getLastRow() > 2) {
       const pasteData = pasteSheet.getDataRange().getValues();
@@ -71,6 +77,10 @@ function loadMasterAndExternalData(ss, sheets) {
         [15, 16, 17, 18, 19]
       );
       if (detectedTimes.length >= 2) colMap.paste.times = detectedTimes.slice(0, 5);
+
+      colMap.paste.wages = ['時給1', '時給2', '時給3', '時給4'].map((n, idx) => findColIdx(pasteData, [n], 25 + idx));
+      colMap.paste.wageSum = findColIdx(pasteData, ['時給合計'], 29);
+      colMap.paste.caps = ['受入可能人数1', '受入可能人数2', '受入可能人数3', '受入可能人数4'].map((n, idx) => findColIdx(pasteData, [n], 54 + idx));
 
       for (let i = 2; i < pasteData.length; i++) {
         const row = pasteData[i];
@@ -158,13 +168,13 @@ function loadMasterAndExternalData(ss, sheets) {
   // 開院日マスタ・エリアマスタ（ヘッダー名からの動的検索 ＆ クリニックNo突合）
   const openDateMap = new Map();
   const openDateByNoMap = new Map();
-  const areaMap = {}; 
+  const areaMap = {};
   const areaByNoMap = new Map();
 
   try {
     const masterSS = SpreadsheetApp.openById('14RbsDcv0nXfEwweki8-9cK3lQUg1XUuhozLNF9u2qAs');
     const extData = masterSS.getSheetByName('拠点名').getDataRange().getValues();
-    
+
     const idxGroup = findColIdx(extData, ['拠点グループ', 'グループ'], 5);
     const idxDept = findColIdx(extData, ['診療科', '診療科目'], 6);
     const idxAreaCol = findColIdx(extData, ['エリア', '地域'], 7);
@@ -234,7 +244,7 @@ function loadMasterAndExternalData(ss, sheets) {
   }
 
   // 変則営業データ（ヘッダー動的検索）
-  const irregularMap = {}; 
+  const irregularMap = {};
   if (sheets.irregular && sheets.irregular.getLastRow() > 1) {
     const iData = sheets.irregular.getDataRange().getValues();
     const idxIrrDate = findColIdx(iData, ['日付', '勤務日', '対象日'], 0);
@@ -243,7 +253,7 @@ function loadMasterAndExternalData(ss, sheets) {
 
     for (let i = 1; i < iData.length; i++) {
       const row = iData[i];
-      const dateObj = parseDateToSafeDateObj(row[idxIrrDate]); 
+      const dateObj = parseDateToSafeDateObj(row[idxIrrDate]);
       const timeRangeStr = row[idxIrrTime];
       const clinicName = row[idxIrrClinic] ? String(row[idxIrrClinic]).trim() : "";
 
@@ -261,15 +271,15 @@ function loadMasterAndExternalData(ss, sheets) {
             }
           }
         }
-        
+
         if (validRanges.length > 0) {
-           const normName = normalizeClinicName(clinicName);
-           if (normName === "全拠点") {
-               irregularMap[`${dateKey}_全拠点`] = validRanges;
-           } else {
-               irregularMap[`${dateKey}_${normName}`] = validRanges;
-               irregularMap[`${dateKey}_${clinicName}`] = validRanges;
-           }
+          const normName = normalizeClinicName(clinicName);
+          if (normName === "全拠点") {
+            irregularMap[`${dateKey}_全拠点`] = validRanges;
+          } else {
+            irregularMap[`${dateKey}_${normName}`] = validRanges;
+            irregularMap[`${dateKey}_${clinicName}`] = validRanges;
+          }
         }
       }
     }
@@ -289,17 +299,17 @@ function loadMasterAndExternalData(ss, sheets) {
       const dateObj = parseDateToSafeDateObj(row[idxClosedDate]);
       const cDept = idxClosedDept !== -1 && row[idxClosedDept] ? String(row[idxClosedDept]).trim() : "";
       const cLoc = idxClosedLoc !== -1 && row[idxClosedLoc] ? String(row[idxClosedLoc]).trim() : "";
-      const cTime = idxClosedTime !== -1 && row[idxClosedTime] ? String(row[idxClosedTime]).trim() : "全日"; 
-      
+      const cTime = idxClosedTime !== -1 && row[idxClosedTime] ? String(row[idxClosedTime]).trim() : "全日";
+
       if (dateObj && cLoc) {
         const dateKey = fastFormatDate(dateObj);
         if (cLoc === "全拠点") {
-             closedDataMap.set(`${dateKey}_全拠点`, cTime);
+          closedDataMap.set(`${dateKey}_全拠点`, cTime);
         } else if (cDept === "内科") {
-             closedDataMap.set(`${dateKey}_${normalizeClinicName(cLoc)}_内科`, cTime);
-             closedDataMap.set(`${dateKey}_${cLoc}_内科`, cTime);
+          closedDataMap.set(`${dateKey}_${normalizeClinicName(cLoc)}_内科`, cTime);
+          closedDataMap.set(`${dateKey}_${cLoc}_内科`, cTime);
         } else {
-             closedDataMap.set(`${dateKey}_${normalizeClinicName(cLoc)}`, cTime);
+          closedDataMap.set(`${dateKey}_${normalizeClinicName(cLoc)}`, cTime);
         }
       }
     }
@@ -339,11 +349,11 @@ function loadShiftAndAbsenceData(sourceSheet, ishiFuzaiSheet) {
   };
 
   const EXCLUDED_KEYWORDS = ["有給", "欠勤", "院外勤務", "バックアップ", "医師会", "嘱託医", "出張インフルエンザワクチン"];
-  const allClinics = new Set(); 
-  const backupInfoMap = {}; 
-  const rawNameMap = {}; 
-  const workingClinics = {}; 
-  
+  const allClinics = new Set();
+  const backupInfoMap = {};
+  const rawNameMap = {};
+  const workingClinics = {};
+
   const srcData = sourceSheet.getDataRange().getValues();
   const idxClinic = findColIdx(srcData, ['拠点名', 'クリニック名'], 0);
   const idxDate = findColIdx(srcData, ['勤務日', '日付'], 1);
@@ -355,60 +365,60 @@ function loadShiftAndAbsenceData(sourceSheet, ishiFuzaiSheet) {
   for (let i = 1; i < srcData.length; i++) {
     const row = srcData[i];
     const name = row[idxClinic] ? String(row[idxClinic]).trim() : "";
-    
+
     if (name === "【関東】バックアップシフト") {
-        const dateObj = parseDateToSafeDateObj(row[idxDate]);
-        if (dateObj) {
-            const dateKey = fastFormatDate(dateObj);
-            const slots = ["09:00~13:00", "15:00~18:00", "18:00~21:00"];
-            let backups = [];
-            for (let j = 0; j < slots.length; j++) {
-                const doc = row[docCols[j]]; 
-                if (doc && String(doc).trim()) backups.push(`${slots[j]}：${doc}先生（全拠点）`);
-            }
-            if (backups.length > 0) backupInfoMap[dateKey] = `【バックアップ】${backups.join('、')}`;
+      const dateObj = parseDateToSafeDateObj(row[idxDate]);
+      if (dateObj) {
+        const dateKey = fastFormatDate(dateObj);
+        const slots = ["09:00~13:00", "15:00~18:00", "18:00~21:00"];
+        let backups = [];
+        for (let j = 0; j < slots.length; j++) {
+          const doc = row[docCols[j]];
+          if (doc && String(doc).trim()) backups.push(`${slots[j]}：${doc}先生（全拠点）`);
         }
-        continue; 
+        if (backups.length > 0) backupInfoMap[dateKey] = `【バックアップ】${backups.join('、')}`;
+      }
+      continue;
     }
 
     if (!name || EXCLUDED_KEYWORDS.some(ex => name.includes(ex))) continue;
     const normName = normalizeClinicName(name);
     allClinics.add(normName);
-    rawNameMap[normName] = name; 
+    rawNameMap[normName] = name;
 
     const dateObj = parseDateToSafeDateObj(row[idxDate]);
     if (dateObj) {
-        const dateKey = fastFormatDate(dateObj);
-        if (!workingClinics[dateKey]) workingClinics[dateKey] = new Set();
-        workingClinics[dateKey].add(normName);
+      const dateKey = fastFormatDate(dateObj);
+      if (!workingClinics[dateKey]) workingClinics[dateKey] = new Set();
+      workingClinics[dateKey].add(normName);
     }
   }
-  
+
   const ishiFuzaiRawData = ishiFuzaiSheet.getDataRange().getValues();
   const idxFDate = findColIdx(ishiFuzaiRawData, ['日付', '勤務日'], 0);
   const idxFName = findColIdx(ishiFuzaiRawData, ['拠点名', 'クリニック名'], 1);
   const idxFTime = findColIdx(ishiFuzaiRawData, ['不在時間', '時間帯', '時間'], 2);
-  const fuzaiRecords = []; 
+  const fuzaiRecords = [];
 
-  for (let i = 1; i < ishiFuzaiRawData.length; i++) { 
+  for (let i = 1; i < ishiFuzaiRawData.length; i++) {
     const row = ishiFuzaiRawData[i];
-    const dateValue = row[idxFDate];        
-    const name = row[idxFName] ? row[idxFName].toString().trim() : ""; 
+    const dateValue = row[idxFDate];
+    const name = row[idxFName] ? row[idxFName].toString().trim() : "";
     const time = row[idxFTime] ? row[idxFTime].toString().trim() : "";
 
-    if (!dateValue || !name || !time) continue; 
+    if (!dateValue || !name || !time) continue;
     if (EXCLUDED_KEYWORDS.some(ex => name.includes(ex))) continue;
 
     const normName = normalizeClinicName(name);
-    allClinics.add(normName); 
-    rawNameMap[normName] = name; 
+    allClinics.add(normName);
+    rawNameMap[normName] = name;
 
     const dObj = parseDateToSafeDateObj(dateValue);
     if (dObj) {
       fuzaiRecords.push({
         dateKey: fastFormatDate(dObj),
-        name: name,      
-        normName: normName, 
+        name: name,
+        normName: normName,
         timeRaw: time,
         isInternalMedicine: name.includes("内科")
       });

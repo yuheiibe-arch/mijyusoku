@@ -28,44 +28,13 @@ function calculateAdvancedMetricsFast(pasteList, ouboList, bosyuList) {
       const p = t.split(':');
       if (p.length >= 2) return parseInt(p[0], 10) * 60 + parseInt(p[1], 10);
     }
+    if (typeof t === 'number' && t >= 0 && t < 1) return Math.round(t * 24 * 60);
     return 0;
-  };
-
-  // 爆速版：中抜けインターバル抽出
-  const getIntervalsFast = (row) => {
-    const p = (t) => {
-      if (!t) return NaN;
-      if (t instanceof Date) return t.getHours() * 60 + t.getMinutes();
-      if (typeof t === 'string') {
-        const pts = t.trim().split(':');
-        if (pts.length >= 2) return parseInt(pts[0], 10) * 60 + parseInt(pts[1], 10);
-      }
-      if (typeof t === 'number' && t >= 0 && t < 1) return Math.round(t * 24 * 60);
-      return NaN;
-    };
-    const times = [];
-    for (let i = 15; i <= 19; i++) {
-      const val = p(row[i]);
-      if (!isNaN(val)) times.push(val);
-    }
-    const len = times.length;
-    if (len === 4) {
-      const res = [];
-      if (times[0] < times[1]) res.push({ start: times[0], end: times[1] });
-      if (times[2] < times[3]) res.push({ start: times[2], end: times[3] });
-      return res;
-    } else if (len === 2) {
-      if (times[0] < times[1]) return [{ start: times[0], end: times[1] }];
-    } else if (len > 0) {
-      const start = times[0], end = times[len - 1];
-      if (start < end) return [{ start: start, end: end }];
-    }
-    return [];
   };
 
   const actualShiftsMap = new Map();
 
-  // ① 貼付用
+  // ① 貼付用（TimeHelpers.gs の extractWorkIntervals で中抜け・単価切替を正確に判別）
   pasteList.forEach(row => {
     const doctor = row[0] ? String(row[0]).trim() : "";
     const clinicRaw = row[12] ? String(row[12]).trim() : "";
@@ -73,7 +42,7 @@ function calculateAdvancedMetricsFast(pasteList, ouboList, bosyuList) {
     if (!doctor || doctor.includes("バックアップ") || doctor.includes("有給") || doctor.includes("欠勤") || !clinicRaw) return;
     const clinic = clinicRaw.replace(/[（(]小児科[）)]/, "").trim();
 
-    const intervals = getIntervalsFast(row);
+    const intervals = extractWorkIntervals(row);
     intervals.forEach(inv => {
       actualShiftsMap.set(`${clinic}_${inv.start}_${inv.end}_${doctor}`, { clinic, start: inv.start, end: inv.end });
     });
@@ -135,7 +104,7 @@ function calculateAdvancedMetricsFast(pasteList, ouboList, bosyuList) {
     if (startMin >= endMin) return;
 
     const clinic = clinicRaw.replace(/[（(]小児科[）)]/, "").trim();
-    
+
     if (secondFlag.includes("二診目")) {
       secondUnfilledMin += (endMin - startMin);
     } else {

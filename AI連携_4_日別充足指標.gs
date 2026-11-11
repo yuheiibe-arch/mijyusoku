@@ -29,7 +29,13 @@ function buildStructuredDailyMetrics_(ss) {
 
   const pasteCols = (masterData.colMap && masterData.colMap.paste)
     ? masterData.colMap.paste
-    : { doc: 0, clinicNo: 11, clinic: 12, dept: 13, date: 14, times: [15, 16, 17, 18, 19] };
+    : {
+        doc: 0, clinicNo: 11, clinic: 12, dept: 13, date: 14,
+        times: [15, 16, 17, 18, 19],
+        wages: [25, 26, 27, 28],
+        wageSum: 29,
+        caps: [54, 55, 56, 57]
+      };
   const ouboCols = (masterData.colMap && masterData.colMap.oubo)
     ? masterData.colMap.oubo
     : { doc: 0, clinicNo: -1, clinic: 3, dept: 4, date: 5, start: 6, end: 7 };
@@ -63,23 +69,8 @@ function buildStructuredDailyMetrics_(ss) {
     return checkZero < openZero;
   };
 
-  const getIntervalsFast = (row) => {
-    const times = [];
-    for (const i of pasteCols.times) {
-      const val = safeParseTime(row[i]);
-      if (!isNaN(val)) times.push(val);
-    }
-    if (times.length === 4) {
-      const res = [];
-      if (times[0] < times[1]) res.push({ start: times[0], end: times[1] });
-      if (times[2] < times[3]) res.push({ start: times[2], end: times[3] });
-      return res;
-    } else if (times.length >= 2) {
-      const start = times[0], end = times[times.length - 1];
-      if (start < end) return [{ start, end }];
-    }
-    return [];
-  };
+  // TimeHelpers.gs の共通関数（中抜け・単価切替判別対応）を使用
+  const getIntervalsFast = (row) => extractWorkIntervals(row, pasteCols);
 
   const metricsMap = {};
 
