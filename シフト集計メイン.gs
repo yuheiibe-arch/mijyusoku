@@ -25,9 +25,9 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheet = ss.getSheetByName('貼付用');
   const targetSheet = ss.getSheetByName('確認用');
-  
+
   // 空行の大量ログ出力を防ぎ、処理を高速化
-  const DETAILED_LOGGING = false; 
+  const DETAILED_LOGGING = false;
 
   if (!sourceSheet || !targetSheet) {
     ss.toast('貼付用 または 確認用 シートが見つかりません。', 'エラー', 5);
@@ -51,7 +51,7 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
 
   rows.forEach((row, index) => {
     const rowIndex = index + 3;
-    
+
     // 空行スキップ
     if (!row[0] && !row[12] && !row[14]) return;
 
@@ -59,7 +59,7 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
     const originalClinicName = row[12] ? row[12].toString().trim() : null;
     const originalDepartment = row[13] ? row[13].toString().trim() : null;
     const shiftDateRaw = row[14];
-    
+
     const aShiftValue = row[63]; // BL列
     const bShiftValue = row[64]; // BM列
     const cShiftValue = row[65]; // BN列
@@ -68,14 +68,14 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
         (originalDepartment && GLOBAL_EXCLUDED_DEPARTMENTS.includes(originalDepartment))) {
       return;
     }
-    
+
     if (!originalClinicName || !shiftDateRaw || !originalDepartment) return;
-    
+
     let shiftDateObj, shiftDateKey;
     try {
-      shiftDateObj = parseDateToSafeDateObj(shiftDateRaw); 
+      shiftDateObj = parseDateToSafeDateObj(shiftDateRaw);
       if (!shiftDateObj || isNaN(shiftDateObj.getTime())) return;
-      shiftDateKey = fastFormatDate(shiftDateObj).replace(/\//g, '-'); 
+      shiftDateKey = fastFormatDate(shiftDateObj).replace(/\//g, '-');
     } catch (e) {
       return;
     }
@@ -110,7 +110,7 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
 
   const outputHeader = ['拠点名', '勤務日', '診療科', '09:00~13:00', '15:00~18:00', '18:00~21:00', '', 'Aシフト医師 09:00-13:00', 'Bシフト医師 15:00-18:00', 'Cシフト医師 18:00-21:00'];
   const outputRows = [];
-  
+
   for (const key in results) {
     const record = results[key];
     let formattedShiftDate = '日付エラー';
@@ -121,25 +121,25 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
         formattedShiftDate = `${yyyymmdd}（${weekday}）`;
       }
     } catch (e) { formattedShiftDate = 'フォーマットエラー'; }
-    
+
     outputRows.push([
       record.clinicName, formattedShiftDate, record.department,
       record.aShiftSum, record.bShiftSum, record.cShiftSum, '',
       record.doctorsA.join(', '), record.doctorsB.join(', '), record.doctorsC.join(', ')
     ]);
   }
-  
+
   const sortedData = outputRows.sort((a, b) => {
     const clinicA = a[0], clinicB = b[0];
     let dateA = new Date("invalid"), dateB = new Date("invalid");
-    try { dateA = parseDateToSafeDateObj(a[1].split('（')[0].trim()) || new Date("invalid"); } catch(e){}
-    try { dateB = parseDateToSafeDateObj(b[1].split('（')[0].trim()) || new Date("invalid"); } catch(e){}
+    try { dateA = parseDateToSafeDateObj(a[1].split('（')[0].trim()) || new Date("invalid"); } catch (e) {}
+    try { dateB = parseDateToSafeDateObj(b[1].split('（')[0].trim()) || new Date("invalid"); } catch (e) {}
     if (clinicA < clinicB) return -1; if (clinicA > clinicB) return 1;
     if (!isNaN(dateA.getTime()) && !isNaN(dateB.getTime())) return dateA.getTime() - dateB.getTime();
     if (!isNaN(dateA.getTime())) return -1; if (!isNaN(dateB.getTime())) return 1;
     return a[1].localeCompare(b[1]);
   });
-  
+
   const lastRowOutput = targetSheet.getLastRow();
   if (lastRowOutput >= 1) {
     targetSheet.getRange(1, 1, lastRowOutput, targetSheet.getMaxColumns()).clearContent();
@@ -149,32 +149,71 @@ function updateSheetRowAdjusted_CallingCellSpecificFormatting() {
     targetSheet.getRange(2, 1, sortedData.length, outputHeader.length).setValues(sortedData);
   }
   SpreadsheetApp.flush();
-  
-  // ▼ 別のファイルに分けた機能を呼び出す ▼
-  try { applyConditionalFormatting_CellSpecific(); } catch (e) {}
+
+  // ▼ 別のファイルに分けた機能を呼び出す（エラー握りつぶし防止） ▼
+  const stepErrors = [];
+
+  try {
+    applyConditionalFormatting_CellSpecific();
+  } catch (e) {
+    Logger.log('条件付き書式設定エラー: ' + (e.stack || e.message));
+    stepErrors.push(`書式設定: ${e.message}`);
+  }
+
   try {
     if (typeof generateDoctorAbsenceReportWithContext === 'function') {
-        generateDoctorAbsenceReportWithContext();
+      generateDoctorAbsenceReportWithContext();
     }
   } catch (e) {
+    Logger.log('医師不在拠点書き出しエラー: ' + (e.stack || e.message));
     ss.toast(`医師不在拠点書き出しエラー: ${e.message}`, 'エラー', 5);
+    stepErrors.push(`医師不在拠点: ${e.message}`);
   }
-  try { setupDateSelection(); } catch (e) {}
+
+  try {
+    setupDateSelection();
+  } catch (e) {
+    Logger.log('日付プルダウン設定エラー: ' + (e.stack || e.message));
+    stepErrors.push(`日付設定: ${e.message}`);
+  }
+
   try {
     if (typeof generateChatworkMessage === 'function') {
-        generateChatworkMessage();
+      generateChatworkMessage();
     }
-  } catch (e) {}
-  
+  } catch (e) {
+    Logger.log('文章自動作成エラー: ' + (e.stack || e.message));
+    ss.toast(`文章自動作成エラー: ${e.message}`, 'エラー', 8);
+    stepErrors.push(`文章自動作成(A6): ${e.message}`);
+    // 古いA6セルのテキストを誤送信しないようクリアして保護
+    const msgSheet = ss.getSheetByName('文章自動作成');
+    if (msgSheet) msgSheet.getRange('A6').clearContent();
+  }
+
   // 🔽🔽 アプローチシート更新処理を呼び出す 🔽🔽
   try {
     if (typeof updateApproachSheet === 'function') {
-        updateApproachSheet();
+      updateApproachSheet();
     }
   } catch (e) {
+    Logger.log('アプローチシート更新エラー: ' + (e.stack || e.message));
     ss.toast(`アプローチシート更新エラー: ${e.message}`, 'エラー', 5);
+    stepErrors.push(`アプローチシート: ${e.message}`);
   }
   // 🔼🔼 ここまで 🔼🔼
-  
-  ss.toast('本番シフト集計が完了しました。', '完了', 3);
+
+  if (stepErrors.length > 0) {
+    try {
+      SpreadsheetApp.getUi().alert(
+        '⚠️ 一部の処理でエラーが発生しました',
+        '以下の工程でエラーが発生したため、もう一度「本番シフト集計実行」をお試しください。\n\n・' + stepErrors.join('\n・'),
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+    } catch (uiErr) {
+      // 時間主導型トリガー等、UI非表示環境からの実行時はスキップ
+    }
+    ss.toast('一部エラーが発生しました。内容を確認してください。', '要確認', 8);
+  } else {
+    ss.toast('本番シフト集計が完了しました。', '完了', 3);
+  }
 }

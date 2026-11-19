@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * AI連携_2_データ抽出.gs（ペイロード組み立て・アプローチ/確認用/応募シフト抽出）
+ * AI連携_2_データ抽出.gs（ペイロード組み立て・アプローチ/確認用/応募シフト/前日差分抽出）
  * ============================================================================
  */
 
@@ -13,6 +13,30 @@ function buildAiShiftContextPayload_(ss) {
   if (!approachSheet || !confirmSheet) {
     throw new Error('「アプローチシート」または「確認用」シートが見つかりません。');
   }
+
+  // ★先に前日基準とのシフト差分（消滅＝キャンセル、勤務➔欠勤＝定期/常勤欠勤、移動玉突き）を検知・取得
+  let recentShiftDiffs = [];
+  try {
+    if (typeof detectAndLogMijyusokuDailyDiffs_ === 'function') {
+      recentShiftDiffs = detectAndLogMijyusokuDailyDiffs_(ss);
+    }
+  } catch (e) {
+    Logger.log('前日差分検知スキップ: ' + e.message);
+  }
+
+  // 不在枠ごとの原因メモ自動付与用インデックス（日付_拠点名 -> 直近変動サマリー）
+  const diffReasonByDateClinic = new Map();
+  recentShiftDiffs.forEach(d => {
+    if (!d.workD || !d.clinic) return;
+    const baseC = cleanBaseClinicName_(d.clinic);
+    const key = `${d.workD}_${baseC}`;
+    const tag = `🚨[${d.type}]${d.doc}先生(${d.daysBefore}日前)`;
+    const prev = diffReasonByDateClinic.get(key) || [];
+    if (!prev.includes(tag)) {
+      prev.push(tag);
+      diffReasonByDateClinic.set(key, prev);
+    }
+  });
 
   const { clinicNoMap, docLicenseMap, docDailyStatusMap, docWorkCalendarMap } =
     buildDoctorWorkCalendarFromSheets_(pasteSheet);
@@ -73,6 +97,12 @@ function buildAiShiftContextPayload_(ss) {
       const rawPrevDocs = idx('前の時間枠の医師') >= 0 ? String(r[idx('前の時間枠の医師')] || '').trim() : '';
       const rawNextDocs = idx('後ろの時間枠の医師') >= 0 ? String(r[idx('後ろの時間枠の医師')] || '').trim() : '';
 
+      const rawMemo = idx('作業メモ') >= 0 ? String(r[idx('作業メモ')] || '').trim() : '';
+      const diffTags = diffReasonByDateClinic.get(`${normDate}_${cleanBaseClinicName_(clinic)}`) || [];
+      const enrichedMemo = diffTags.length > 0
+        ? (rawMemo && !rawMemo.includes('🚨') ? `${diffTags.join(' ')} / ${rawMemo}` : (rawMemo || diffTags.join(' ')))
+        : rawMemo;
+
       unfilledList.push({
         date: normDate,
         clinic: clinic,
@@ -86,7 +116,7 @@ function buildAiShiftContextPayload_(ss) {
         assignee: idx('担当') >= 0 ? String(r[idx('担当')] || '').trim() : '',
         status: status,
         specialWage: idx('特別時給') >= 0 ? String(r[idx('特別時給')] || '').trim() : '',
-        memo: idx('作業メモ') >= 0 ? String(r[idx('作業メモ')] || '').trim() : ''
+        memo: enrichedMemo
       });
     }
   }
@@ -135,6 +165,10 @@ function buildAiShiftContextPayload_(ss) {
   let dailyMetricsByDate = {};
   try {
     dailyMetricsByDate = buildStructuredDailyMetrics_(ss);
+    // AI連携_1_送信制御.gs 側の2重送信防止ハッシュ(m: dailyMetricsByDate)でも差分更新を確実に検知させるメタ情報
+    if (recentShiftDiffs.length > 0) {
+      dailyMetricsByDate._diffCount = recentShiftDiffs.length;
+    }
   } catch (e) {
     Logger.log('日別充足指標の算出スキップ: ' + e.message);
   }
@@ -149,7 +183,8 @@ function buildAiShiftContextPayload_(ss) {
     spotCandidateRows,
     bundledCandidateRows,
     summaryText,
-    dailyMetricsByDate
+    dailyMetricsByDate,
+    recentShiftDiffs
   };
 }
 

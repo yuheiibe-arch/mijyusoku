@@ -82,20 +82,18 @@ function debugTestMnysSourceData() {
   }
   console.log("=== ✅ デバッグ完了！続けて sendEncryptedBqShiftsToCaps を実行してください ===");
 }
-
 /**
  * シフトデータを抽出してオブジェクトを作成する内部関数
+ * ★前月1日（prevMonthStartObj）から抽出することで、先月月次レポートも常に100%補完可能にする
  */
 function buildBqShiftPayload_() {
   const ss = SpreadsheetApp.openById(BQ_SYNC_CONFIG.BQ_SHIFT_SS_ID);
   const now = new Date();
   const todayStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd");
 
-  // 当月1日 と 14日前 のどちらか早い方を開始日とする（週次・月初の過去分集計用）
-  const monthStartObj = new Date(now.getFullYear(), now.getMonth(), 1);
-  const lookbackObj = new Date(now.getFullYear(), now.getMonth(), now.getDate() - BQ_SYNC_CONFIG.LOOKBACK_DAYS);
-  const startDateObj = monthStartObj < lookbackObj ? monthStartObj : lookbackObj;
-  const startDateStr = Utilities.formatDate(startDateObj, "Asia/Tokyo", "yyyy/MM/dd");
+  // ★前月1日を開始日とする（月次レポートの先月確定分 ＆ 直近差分検知を完全カバー）
+  const prevMonthStartObj = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const startDateStr = Utilities.formatDate(prevMonthStartObj, "Asia/Tokyo", "yyyy/MM/dd");
 
   const maxDateObj = new Date(now.getFullYear(), now.getMonth(), now.getDate() + BQ_SYNC_CONFIG.TARGET_DAYS);
   const maxDateStr = Utilities.formatDate(maxDateObj, "Asia/Tokyo", "yyyy/MM/dd");
@@ -104,8 +102,8 @@ function buildBqShiftPayload_() {
   return {
     schemaVersion: 2,
     generatedAt: nowStr,
-    baseDate: todayStr,      // 既存互換用（今日）
-    startDate: startDateStr, // 実際の抽出開始日
+    baseDate: todayStr,
+    startDate: startDateStr,
     maxDate: maxDateStr,
     kakutei: extractShiftRows_(ss.getSheetByName("確定シフト"), startDateStr, maxDateStr, "kakutei"),
     obo:     extractShiftRows_(ss.getSheetByName("応募シフト"), todayStr, maxDateStr, "obo"),
