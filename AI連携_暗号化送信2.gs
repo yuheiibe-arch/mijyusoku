@@ -1,8 +1,8 @@
 /**
  * ============================================================================
- * 【mnys.jp 側】AI連携_暗号化送信2.gs（2大保管ブック横断検索・前月/前々月自動合体・全欠損月一括補完版）
- * - sendEncryptedBqShiftsToCaps()：通常送信時、前月・前々月（例: 2026/09, 2026/10）を2つの保管ブックから自動横断検索して合体送信
- * - sendAllMissingMonthlyArchivesToCaps()：caps側で199行切れ・未格納だった過去9ヶ月分を一括補完送信
+ * 【mnys.jp 側】AI連携_暗号化送信2.gs（関数名競合防止V3・全欠損月一括補完対応版）
+ * - 別ファイル内の旧 buildBqShiftPayload_() 等と競合しないよう内部関数を全て V3 固有名称化
+ * - 初回補完時は sendArchiveAndLatestBqAllInOne() を1回実行するだけで全過去月＋最新BQを一括送信
  * ============================================================================
  */
 
@@ -21,15 +21,23 @@ const BQ_SYNC_CONFIG = {
 };
 
 /**
- * ⏰ 本番・手動送信関数（前月・前々月の確定シフトも月次保管ブックから自動横断補完して送信）
+ * 🚀【ワンクリック完結】過去9ヶ月分（199行切れ月すべて）＋ 最新BQシフトパックを連続送信
+ */
+function sendArchiveAndLatestBqAllInOne() {
+  sendAllMissingMonthlyArchivesToCaps();
+  sendEncryptedBqShiftsToCaps();
+}
+
+/**
+ * ⏰ 定期トリガー・通常送信関数（前月・前々月の確定シフトも保管ブックから自動合体して送信）
  */
 function sendEncryptedBqShiftsToCaps() {
   const props = PropertiesService.getScriptProperties();
   const secretKey = props.getProperty("BQ_SYNC_SECRET_KEY") || BQ_SYNC_CONFIG.DEFAULT_SECRET_KEY;
 
-  const payload = buildBqShiftPayload_();
+  const payload = buildBqShiftPayloadV3_();
   const jsonString = JSON.stringify(payload);
-  const encryptedText = encryptPayloadForMail_(jsonString, secretKey);
+  const encryptedText = encryptPayloadForMailV3_(jsonString, secretKey);
 
   const attachmentBlob = Utilities.newBlob(
     encryptedText,
@@ -39,7 +47,7 @@ function sendEncryptedBqShiftsToCaps() {
 
   const subject = `${BQ_SYNC_CONFIG.SUBJECT_PREFIX} (${payload.generatedAt})`;
   const bodySummary = [
-    `BQシフト状況パック（自動送信・過去2ヶ月アーカイブ補完対応）`,
+    `BQシフト状況パック（V3・過去2ヶ月アーカイブ補完対応）`,
     `抽出期間: ${payload.startDate} 〜 ${payload.maxDate} (基準日: ${payload.baseDate})`,
     `確定シフト: ${payload.kakutei.length}件 (補完内訳: ${payload.archiveSummary || "なし"})`,
     `応募シフト: ${payload.obo.length}件`,
@@ -52,11 +60,11 @@ function sendEncryptedBqShiftsToCaps() {
     attachments: [attachmentBlob]
   });
 
-  console.log(`✅ 添付送信完了！ 期間:${payload.startDate}〜${payload.maxDate} | 確定=${payload.kakutei.length}件 (補完:${payload.archiveSummary || "なし"}), 応募=${payload.obo.length}件, 募集=${payload.bosyu.length}件`);
+  console.log(`✅ BQパック送信完了！ 期間:${payload.startDate}〜${payload.maxDate} | 確定=${payload.kakutei.length}件 (補完:${payload.archiveSummary || "なし"})`);
 }
 
 /**
- * 📚 ワンショット補完用：caps側で199行切れ・未格納だった過去月を2つの月次保管ブックから横断検索して一括送信
+ * 📚 過去月一括補完送信（2025/08, 09, 12 ＆ 2026/04, 06, 07, 08, 09, 10 の全9ヶ月・61列完全版）
  */
 function sendAllMissingMonthlyArchivesToCaps() {
   const targetYms = [
@@ -66,31 +74,28 @@ function sendAllMissingMonthlyArchivesToCaps() {
 
   const props = PropertiesService.getScriptProperties();
   const secretKey = props.getProperty("BQ_SYNC_SECRET_KEY") || BQ_SYNC_CONFIG.DEFAULT_SECRET_KEY;
-  const archiveBooks = openAllArchiveBooks_();
+  const archiveBooks = openAllArchiveBooksV3_();
 
   const allRecords = [];
   const summaryParts = [];
-  const missingYms = [];
 
   targetYms.forEach(ym => {
     const [y, m] = ym.split("/").map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
     const mStart = `${ym}/01`;
-    const mEnd = Utilities.formatDate(new Date(y, m, 0), "Asia/Tokyo", "yyyy/MM/dd");
+    const mEnd = `${ym}/${("0" + lastDay).slice(-2)}`;
 
-    const bestRows = extractBestArchiveMonthAcrossBooks_(archiveBooks, ym, mStart, mEnd);
+    const bestRows = extractBestArchiveMonthV3_(archiveBooks, ym, mStart, mEnd);
     if (bestRows.length >= 500) {
       bestRows.forEach(r => allRecords.push(r));
       summaryParts.push(`${ym}:${bestRows.length}件`);
     } else {
-      missingYms.push(`${ym}(最大${bestRows.length}件)`);
+      console.log(`⚠️ スキップ(${ym}): 抽出件数 ${bestRows.length}件`);
     }
   });
 
-  if (missingYms.length > 0) {
-    console.log(`ℹ️ 500件未満のためスキップした月: ${missingYms.join(", ")}`);
-  }
   if (allRecords.length === 0) {
-    console.log("⚠️ 送信可能な月次アーカイブ（500件以上）が見つかりませんでした。");
+    console.log("⚠️ 送信可能な月次アーカイブが見つかりませんでした。");
     return;
   }
 
@@ -103,8 +108,9 @@ function sendAllMissingMonthlyArchivesToCaps() {
     kakutei: allRecords
   };
 
-  const encryptedText = encryptPayloadForMail_(JSON.stringify(payload), secretKey);
-  const blob = Utilities.newBlob(encryptedText, "application/octet-stream", "monthly_archive_pack.enc");
+  const encryptedText = encryptPayloadForMailV3_(JSON.stringify(payload), secretKey);
+  // 復号側(decryptBqMailMsg_)との互換性を100%保証するため同じ添付ファイル名を使用（件名で判別）
+  const blob = Utilities.newBlob(encryptedText, "application/octet-stream", BQ_SYNC_CONFIG.ATTACHMENT_FILENAME);
 
   GmailApp.sendEmail(
     BQ_SYNC_CONFIG.TO_ADDRESS,
@@ -115,104 +121,58 @@ function sendAllMissingMonthlyArchivesToCaps() {
   console.log(`✅ 過去月アーカイブ一括送信完了！ 総計 ${allRecords.length}件 (${summaryParts.join(", ")})`);
 }
 
-/**
- * 2つの月次保管ブックを安全に開いて配列で返す
- */
-function openAllArchiveBooks_() {
+function openAllArchiveBooksV3_() {
   const books = [];
   BQ_SYNC_CONFIG.MONTHLY_ARCHIVE_SS_IDS.forEach(id => {
-    try {
-      books.push(SpreadsheetApp.openById(id));
-    } catch (e) {
-      console.log(`保管ブック読込スキップ(${id}): ${e.message}`);
-    }
+    try { books.push(SpreadsheetApp.openById(id)); } catch (e) {}
   });
   return books;
 }
 
-/**
- * 複数ブックを横断して指定年月(ymStr)に該当する最も件数の多い確定シフト配列を取得する
- */
-function extractBestArchiveMonthAcrossBooks_(books, ymStr, mStart, mEnd) {
-  const [y, m] = ymStr.split("/").map(Number);
-  const shortYr = String(y).slice(-2);
-  const candidateSheets = [];
-
-  books.forEach(book => {
-    book.getSheets().forEach(sh => {
-      const rowsCnt = sh.getLastRow();
-      if (rowsCnt < 300) return; // 199行切れやサマリー表は最初から除外
-
-      const name = sh.getName().normalize("NFKC").trim();
-      if (/グラフ|集計|マスタ|テンプレ|ピボット|削除|ダミー/i.test(name)) return;
-
-      // パターン1: 年・月の両方がタブ名に含まれている（例: "2026/09", "2026年9月", "202609", "26/09"）
-      const hasFullYearMatch = new RegExp(`(^|\\D)${y}[\\/._\\-年\\s]*0?${m}(月|度|確定|$|\\D)`).test(name);
-      const hasShortYearMatch = new RegExp(`^${shortYr}[\\/._\\-]0?${m}(月|$|\\D)`).test(name);
-      if (hasFullYearMatch || hasShortYearMatch) {
-        candidateSheets.push({ sh, priority: 0, rowsCnt });
-        return;
-      }
-
-      // パターン2: 月のみのタブ名（例: "9月", "09月", "09", "9"）➔ 先頭数行の日付を覗いて年が一致するか検証
-      const hasMonthOnlyMatch = new RegExp(`^0?${m}(月|月度|月確定)?$`).test(name);
-      if (hasMonthOnlyMatch) {
-        try {
-          const sampleVals = sh.getRange(1, 1, Math.min(12, rowsCnt), Math.min(20, sh.getLastColumn())).getDisplayValues();
-          const joinedSample = sampleVals.map(r => r.join(" ")).join(" ");
-          if (joinedSample.includes(`${y}/0${m}`) || joinedSample.includes(`${y}/${m}/`) || joinedSample.includes(`${y}-${('0' + m).slice(-2)}`) || joinedSample.includes(`${y}年${m}月`)) {
-            candidateSheets.push({ sh, priority: 1, rowsCnt });
-          }
-        } catch (e) {}
-      }
-    });
-  });
-
-  candidateSheets.sort((a, b) => (a.priority - b.priority) || (b.rowsCnt - a.rowsCnt));
-
+function extractBestArchiveMonthV3_(books, ymStr, mStart, mEnd) {
   let bestRows = [];
-  for (let i = 0; i < candidateSheets.length; i++) {
-    const extracted = extractShiftRows_(candidateSheets[i].sh, mStart, mEnd, "kakutei");
-    if (extracted.length > bestRows.length) {
-      bestRows = extracted;
-    }
-    if (bestRows.length >= 1000) break; // 完全データが取れた時点で確定
-  }
+  books.forEach(book => {
+    const sh = book.getSheetByName(ymStr);
+    if (!sh || sh.getLastRow() < 300) return;
+    const rows = extractShiftRowsV3_(sh, mStart, mEnd, "kakutei");
+    if (rows.length > bestRows.length) bestRows = rows;
+  });
   return bestRows;
 }
 
-/**
- * 通常BQパック構築：前々月1日（月次レポートの前月＆当月を完全カバー）〜62日後を抽出
- */
-function buildBqShiftPayload_() {
+function buildBqShiftPayloadV3_() {
   const ss = SpreadsheetApp.openById(BQ_SYNC_CONFIG.BQ_SHIFT_SS_ID);
   const now = new Date();
   const todayStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd");
+  const curY = Number(todayStr.slice(0, 4));
+  const curM = Number(todayStr.slice(5, 7));
 
-  // 前々月1日を開始日とする（例: 11月実行時は 2026/09/01〜 をカバー）
-  const twoMonthsAgoStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-  const startDateStr = Utilities.formatDate(twoMonthsAgoStart, "Asia/Tokyo", "yyyy/MM/dd");
-  const maxDateObj = new Date(now.getFullYear(), now.getMonth(), now.getDate() + BQ_SYNC_CONFIG.TARGET_DAYS);
+  const calcYmInfo = offsetMonths => {
+    const dObj = new Date(curY, curM - 1 + offsetMonths, 1);
+    const y = dObj.getFullYear(), m = dObj.getMonth() + 1;
+    const ym = `${y}/${("0" + m).slice(-2)}`;
+    const endDay = new Date(y, m, 0).getDate();
+    return { ym, mStart: `${ym}/01`, mEnd: `${ym}/${("0" + endDay).slice(-2)}` };
+  };
+
+  const twoAgo = calcYmInfo(-2);
+  const oneAgo = calcYmInfo(-1);
+  const startDateStr = twoAgo.mStart;
+
+  const maxDateObj = new Date(now.getTime() + BQ_SYNC_CONFIG.TARGET_DAYS * 86400000);
   const maxDateStr = Utilities.formatDate(maxDateObj, "Asia/Tokyo", "yyyy/MM/dd");
   const nowStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd HH:mm");
 
-  let kakuteiList = extractShiftRows_(ss.getSheetByName("確定シフト"), startDateStr, maxDateStr, "kakutei");
+  let kakuteiList = extractShiftRowsV3_(ss.getSheetByName("確定シフト"), startDateStr, maxDateStr, "kakutei");
   const archiveLogs = [];
   let archiveBooks = null;
 
-  // 前々月(-2)・前月(-1)について、確定シフト側に1,000件未満しか無ければ2つの保管ブックを横断検索して補完
-  [-2, -1].forEach(offset => {
-    const mStartObj = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-    const mEndObj = new Date(now.getFullYear(), now.getMonth() + offset + 1, 0);
-    const mStart = Utilities.formatDate(mStartObj, "Asia/Tokyo", "yyyy/MM/dd");
-    const mEnd = Utilities.formatDate(mEndObj, "Asia/Tokyo", "yyyy/MM/dd");
-    const ym = mStart.slice(0, 7);
-
+  [twoAgo, oneAgo].forEach(({ ym, mStart, mEnd }) => {
     const existingCnt = kakuteiList.filter(r => r.d >= mStart && r.d <= mEnd).length;
     if (existingCnt >= 1000) return;
 
-    if (!archiveBooks) archiveBooks = openAllArchiveBooks_();
-    const archRows = extractBestArchiveMonthAcrossBooks_(archiveBooks, ym, mStart, mEnd);
+    if (!archiveBooks) archiveBooks = openAllArchiveBooksV3_();
+    const archRows = extractBestArchiveMonthV3_(archiveBooks, ym, mStart, mEnd);
     if (archRows.length > existingCnt) {
       kakuteiList = kakuteiList.filter(r => r.d < mStart || r.d > mEnd).concat(archRows);
       archiveLogs.push(`${ym}:${archRows.length}件`);
@@ -229,12 +189,12 @@ function buildBqShiftPayload_() {
     maxDate: maxDateStr,
     archiveSummary: archiveLogs.join(", "),
     kakutei: kakuteiList,
-    obo:     extractShiftRows_(ss.getSheetByName("応募シフト"), todayStr, maxDateStr, "obo"),
-    bosyu:   extractShiftRows_(ss.getSheetByName("募集シフト"), todayStr, maxDateStr, "bosyu")
+    obo:     extractShiftRowsV3_(ss.getSheetByName("応募シフト"), todayStr, maxDateStr, "obo"),
+    bosyu:   extractShiftRowsV3_(ss.getSheetByName("募集シフト"), todayStr, maxDateStr, "bosyu")
   };
 }
 
-function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
+function extractShiftRowsV3_(sheet, startDateStr, maxDateStr, sheetType) {
   if (!sheet || sheet.getLastRow() < 2) return [];
   const isBosyuSheet = (sheetType === "bosyu");
   const isKakuteiSheet = (sheetType === "kakutei");
@@ -299,7 +259,7 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
   const list = [];
   for (let r = hRow + 1; r < vals.length; r++) {
     const row = vals[r];
-    const dateStr = normalizeYmd_(row[iDate], fbYear);
+    const dateStr = normalizeYmdV3_(row[iDate], fbYear);
     if (!dateStr || dateStr < startDateStr || dateStr > maxDateStr) continue;
 
     const clinic = String(row[iClinic] || "").trim();
@@ -315,8 +275,8 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
     if (!isBosyuSheet && (!docName || /休館|勤務なし|医師不在/.test(docName))) continue;
 
     const cNo = iClinicNo !== -1 ? String(row[iClinicNo] || "").replace(/^[="']+|[="']+$/g, "").replace(/\.0+$/, "").trim() : "";
-    const start = iStart !== -1 ? padHhMm_(row[iStart]) : "";
-    const end = iEnd !== -1 ? padHhMm_(row[iEnd]) : "";
+    const start = iStart !== -1 ? padHhMmV3_(row[iStart]) : "";
+    const end = iEnd !== -1 ? padHhMmV3_(row[iEnd]) : "";
     const dept = iDept !== -1 ? String(row[iDept] || "").trim() : "";
     const wage = iWage !== -1 ? String(row[iWage] || "").replace(/,/g, "").trim() : "";
     const allowances = allowanceCols.map(c => String(row[c] || "").trim()).filter(Boolean).join("/");
@@ -351,7 +311,7 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
       if (iSpecialSetting !== -1 && row[iSpecialSetting]) obj.sp = String(row[iSpecialSetting]).trim();
       list.push(obj);
     } else {
-      const ivStr = buildWorkIntervalStr_(row, [iStart, iEnd1, iEnd2, iEnd3, iEnd], wageSlotCols, iWage, capSlotCols);
+      const ivStr = buildWorkIntervalStrV3_(row, [iStart, iEnd1, iEnd2, iEnd3, iEnd], wageSlotCols, iWage, capSlotCols);
       const combinedNotes = `${rawRm} ${rawSc}`;
       let shiftType = "";
       if (clinic === "有給" || clinic === "有休" || cNo === "1017") shiftType = "有給";
@@ -373,8 +333,8 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
       if (compactRm) obj.rm = compactRm;
       if (rawSc) obj.sc = rawSc.substring(0, 150);
 
-      const applyDateStr = iApplyDate !== -1 ? normalizeYmd_(row[iApplyDate], null) : "";
-      const createDateStr = iCreateDate !== -1 ? normalizeYmd_(row[iCreateDate], null) : "";
+      const applyDateStr = iApplyDate !== -1 ? normalizeYmdV3_(row[iApplyDate], null) : "";
+      const createDateStr = iCreateDate !== -1 ? normalizeYmdV3_(row[iCreateDate], null) : "";
       if (applyDateStr) obj.ad = applyDateStr;
       if (createDateStr) obj.cd = createDateStr;
 
@@ -384,7 +344,7 @@ function extractShiftRows_(sheet, startDateStr, maxDateStr, sheetType) {
   return list;
 }
 
-function buildWorkIntervalStr_(row, colIndices, wageSlotCols, iWage, capSlotCols) {
+function buildWorkIntervalStrV3_(row, colIndices, wageSlotCols, iWage, capSlotCols) {
   if (typeof extractWorkIntervals === "function") {
     const intervals = extractWorkIntervals(row, {
       times: colIndices,
@@ -396,13 +356,13 @@ function buildWorkIntervalStr_(row, colIndices, wageSlotCols, iWage, capSlotCols
       return intervals.map(iv => `${safeFormatTime(iv.start)}-${safeFormatTime(iv.end)}`).join("/");
     }
   }
-  const times = colIndices.filter(idx => idx !== -1).map(idx => padHhMm_(row[idx])).filter(val => /^\d{2}:\d{2}$/.test(val));
+  const times = colIndices.filter(idx => idx !== -1).map(idx => padHhMmV3_(row[idx])).filter(val => /^\d{2}:\d{2}$/.test(val));
   if (times.length === 4) return `${times[0]}-${times[1]}/${times[2]}-${times[3]}`;
   if (times.length >= 2) return `${times[0]}-${times[times.length - 1]}`;
   return "";
 }
 
-function encryptPayloadForMail_(plainText, secretKey) {
+function encryptPayloadForMailV3_(plainText, secretKey) {
   const blob = Utilities.newBlob(plainText, "application/json", "data.json");
   const gzippedBytes = Utilities.gzip(blob).getBytes();
   const keyBytes = Utilities.newBlob(secretKey).getBytes();
@@ -413,25 +373,21 @@ function encryptPayloadForMail_(plainText, secretKey) {
   return "ENC_V1:" + Utilities.base64Encode(outBytes);
 }
 
-function normalizeYmd_(val, fallbackYear) {
+function normalizeYmdV3_(val, fallbackYear) {
   if (!val) return "";
   const s = String(val).normalize("NFKC").replace(/^[="']+|[="']+$/g, "").split(/[（(\s]/)[0].trim().replace(/[年月.\-]/g, "/").replace(/日.*$/, "");
-  // YYYY/MM/DD
   const mFull = s.match(/^(20\d{2})\/(\d{1,2})\/(\d{1,2})$/);
   if (mFull) return `${mFull[1]}/${("0" + mFull[2]).slice(-2)}/${("0" + mFull[3]).slice(-2)}`;
-  // MM/DD/YYYY (US形式)
   const mUs = s.match(/^(\d{1,2})\/(\d{1,2})\/(20\d{2})$/);
   if (mUs) return `${mUs[3]}/${("0" + mUs[1]).slice(-2)}/${("0" + mUs[2]).slice(-2)}`;
-  // YY/MM/DD
   const m2Yr = s.match(/^(2\d)\/(\d{1,2})\/(\d{1,2})$/);
   if (m2Yr) return `20${m2Yr[1]}/${("0" + m2Yr[2]).slice(-2)}/${("0" + m2Yr[3]).slice(-2)}`;
-  // MM/DD
   const mShort = s.match(/^(\d{1,2})\/(\d{1,2})$/);
   if (mShort && fallbackYear) return `${fallbackYear}/${("0" + mShort[1]).slice(-2)}/${("0" + mShort[2]).slice(-2)}`;
   return "";
 }
 
-function padHhMm_(val) {
+function padHhMmV3_(val) {
   const m = String(val || "").normalize("NFKC").trim().match(/^(\d{1,2}):(\d{2})/);
   return m ? `${("0" + m[1]).slice(-2)}:${m[2]}` : String(val || "").trim();
 }
