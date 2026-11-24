@@ -36,7 +36,7 @@ function buildWeeklyMonthlySummaryText(params) {
     areaCount[area].push(displayName);
   });
 
-  let summaryText = `[info][title]週間医師充足数[/title]\n`;
+  let summaryText = `[info][title]週間医師充足数[/title]`;
   summaryText += `計測期間：${fastFormatDate(startDate)}~${fastFormatDate(endDate)}\n\n`;
   summaryText += `１診目充足率：${wRate1st}%（充足済み：${wFilled1stH}h/募集：${wReq1stH}h）\n`;
   
@@ -67,7 +67,7 @@ function buildWeeklyMonthlySummaryText(params) {
   const osakaClinics = areaCount["大阪"] || [];
   if (osakaClinics.length > 0) {
     if (kantouAreas.some(a => (areaCount[a] || []).length > 0)) {
-      summaryText += `[hr]\n`;
+      summaryText += `[hr]`;
     }
     const uniqueNames = [...new Set(osakaClinics)];
     summaryText += `大阪：${uniqueNames.length}拠点（${uniqueNames.join('、')}）\n`;
@@ -95,7 +95,7 @@ function buildWeeklyMonthlySummaryText(params) {
   const monthStartStr = fastFormatDate(new Date(startDate.getFullYear(), startDate.getMonth(), 1));
   const monthEndStr = fastFormatDate(new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0));
 
-  summaryText += `[hr]\n`;
+  summaryText += `[hr]`;
   summaryText += `月間集計数\n`;
   summaryText += `計測期間：${monthStartStr}~${monthEndStr}\n\n`;
   summaryText += `１診目充足率：${mRate1st}%（充足済み：${mFilled1stH}h/募集：${mReq1stH}h）\n`;
@@ -109,9 +109,9 @@ function buildWeeklyMonthlySummaryText(params) {
   }
   
   summaryText += `医師不在時間合計：${mGapHours}h\n`;
-  summaryText += `医師不在拠点箇所（延べ数）：${monthly.absenceCount}\n`;
+  summaryText += `医師不在拠点箇所（延べ数）：${monthly.absenceCount}`;
 
-  summaryText += `[/info]\n\n`;
+  summaryText += `[/info]`;
 
   return summaryText;
 }

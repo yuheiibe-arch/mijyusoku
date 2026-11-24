@@ -299,7 +299,7 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
         }
         // ▲▲▲ ここまで ▲▲▲
 
-        entry += `[hr]\n`;
+        entry += `[hr]`;
         entry += `小児科１診目充足率：${rate}%（充足済み：${filledHours}h/募集：${requiredHours}h）\n`;
 
         if (masterData.isExtSsLoaded) {
@@ -321,11 +321,11 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
         entry += `\n`;
         if (dailyOutputLines.length > 0) {
           dailyOutputLines.sort();
-          entry += `＜医師不在拠点＞\n` + dailyOutputLines.join('\n') + '\n';
+          entry += `＜医師不在拠点＞\n` + dailyOutputLines.join('\n');
         } else {
-          entry += `充足\n`;
+          entry += `充足`;
         }
-        entry += `[/info]\n`;
+        entry += `[/info]`;
         dailyText += entry;
         hasAnyContent = true;
       }
@@ -367,7 +367,7 @@ function buildDailyAndSummaryReport(startDate, endDate, masterData, shiftData, w
   const summaryText = buildWeeklyMonthlySummaryText(summaryParams);
 
   if (!hasAnyContent) {
-    dailyText = "対象期間内に報告すべきデータ（小児科）はありませんでした。\n";
+    dailyText = "対象期間内に報告すべきデータ（小児科）はありませんでした。";
   }
 
   return { summaryText, dailyText };
